@@ -325,6 +325,22 @@ class RayCodeGen(TaskCodeGen):
 
         # Add common imports
         self._add_common_imports()
+        self._code.append(
+            textwrap.dedent("""\
+            def _log_launch_phase(name, epoch=None, monotonic=None):
+                if epoch is None:
+                    epoch = time.time()
+                if monotonic is None:
+                    monotonic = time.monotonic()
+                print(
+                    f'SKYPILOT_LAUNCH_PHASE name={name} '
+                    f'epoch={epoch:.6f} '
+                    f'monotonic={monotonic:.6f}',
+                    flush=True)
+
+            _driver_entry_epoch = time.time()
+            _driver_entry_monotonic = time.monotonic()
+            """))
 
         # Add Ray-specific setup
         self._code.append(
@@ -353,12 +369,22 @@ class RayCodeGen(TaskCodeGen):
             # launched before #1790.
             if os.path.exists({constants.SKY_REMOTE_RAY_TEMPDIR!r}):
                 kwargs['_temp_dir'] = {constants.SKY_REMOTE_RAY_TEMPDIR!r}
+            _ray_init_start_epoch = time.time()
+            _ray_init_start_monotonic = time.monotonic()
             ray.init(
                 address={ray_address!r},
                 namespace='__sky__{job_id}__',
                 log_to_driver=True,
                 **kwargs
             )
+            # Ray may take control of early driver output while connecting.
+            # Emit saved pre-init timestamps after connection so they remain in
+            # the retained job log.
+            _log_launch_phase('driver_entry', _driver_entry_epoch,
+                              _driver_entry_monotonic)
+            _log_launch_phase('ray_init_start', _ray_init_start_epoch,
+                              _ray_init_start_monotonic)
+            _log_launch_phase('ray_init_end')
             def get_or_fail(futures, pg) -> List[int]:
                 \"\"\"Wait for tasks, if any fails, cancel all unready.\"\"\"
                 if not futures:
@@ -470,7 +496,8 @@ class RayCodeGen(TaskCodeGen):
             # FIXME: This will print the error message from autoscaler if
             # it is waiting for other task to finish. We should hide the
             # error message.
-            ray.get(pg.ready())"""))
+            ray.get(pg.ready())
+            _log_launch_phase('placement_group_ready')"""))
         self._add_job_started_msg()
 
         job_id = self.job_id
@@ -549,6 +576,7 @@ class RayCodeGen(TaskCodeGen):
         # Export IP and node rank to the environment variables.
         self._code += [
             textwrap.dedent(f"""\
+                _log_launch_phase('rank_discovery_start')
                 @ray.remote
                 def check_ip():
                     return ray.util.get_node_ip_address()
@@ -566,6 +594,7 @@ class RayCodeGen(TaskCodeGen):
                 job_ip_rank_list = sorted(gang_scheduling_id_to_ip, key=cluster_ips_to_node_id.get)
                 job_ip_rank_map = {{ip: i for i, ip in enumerate(job_ip_rank_list)}}
                 job_ip_list_str = '\\n'.join(job_ip_rank_list)
+                _log_launch_phase('rank_discovery_end')
                 """),
         ]
 
@@ -587,6 +616,7 @@ class RayCodeGen(TaskCodeGen):
                                log_dir=log_dir,
                                env_vars=env_vars,
                                gang_scheduling_id=i)
+        self._code.append('_log_launch_phase("user_tasks_submitted")')
 
     def _add_ray_task(self,
                       bash_script: Optional[str],

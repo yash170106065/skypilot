@@ -45,6 +45,13 @@ if typing.TYPE_CHECKING:
 logger = sky_logging.init_logger(__name__)
 
 
+def _log_launch_phase(name: str) -> None:
+    """Emit a parseable timestamp for launch critical-path analysis."""
+    logger.info(f'SKYPILOT_LAUNCH_PHASE name={name} '
+                f'epoch={time.time():.6f} '
+                f'monotonic={time.monotonic():.6f}')
+
+
 class Stage(enum.Enum):
     """Stages for a run of a sky.Task."""
     # TODO: rename actual methods to be consistent.
@@ -643,13 +650,17 @@ def _execute_dag(
             if idle_minutes_to_autostop is not None:
                 assert isinstance(backend, backends.CloudVmRayBackend)
                 assert isinstance(handle, backends.CloudVmRayResourceHandle)
-                backend.set_autostop(handle,
-                                     idle_minutes_to_autostop,
-                                     wait_for,
-                                     down,
-                                     hook=hook,
-                                     hook_timeout=hook_timeout,
-                                     hooks=hooks_payload)
+                _log_launch_phase('autodown_start')
+                try:
+                    backend.set_autostop(handle,
+                                         idle_minutes_to_autostop,
+                                         wait_for,
+                                         down,
+                                         hook=hook,
+                                         hook_timeout=hook_timeout,
+                                         hooks=hooks_payload)
+                finally:
+                    _log_launch_phase('autodown_end')
             elif hooks_payload is not None:
                 # Hooks can fire on preemption/down independent of
                 # autostop — persist them even when autostop is disabled.
@@ -659,13 +670,19 @@ def _execute_dag(
                 assert isinstance(handle, backends.CloudVmRayResourceHandle)
                 kwargs = _compute_set_autostop_args_for_hooks_only_relaunch(
                     handle.cluster_name, hooks_payload)
-                backend.set_autostop(handle, **kwargs)
+                _log_launch_phase('autodown_start')
+                try:
+                    backend.set_autostop(handle, **kwargs)
+                finally:
+                    _log_launch_phase('autodown_end')
 
         job_id = None
         if Stage.EXEC in stages:
             try:
                 global_user_state.update_last_use(handle.get_cluster_name())
+                _log_launch_phase('execute_start')
                 job_id = backend.execute(handle, task, dryrun=dryrun)
+                _log_launch_phase('execute_end')
             finally:
                 # Enables post_execute() to be run after KeyboardInterrupt.
                 backend.post_execute(handle, down)

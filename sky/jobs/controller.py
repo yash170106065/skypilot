@@ -619,6 +619,10 @@ class JobController:
                 specs=_build_task_specs(self._strategy_executor),
                 callback_func=callback_func,
                 full_resources_json=full_resources_json)
+            logger.info('SKYPILOT_LAUNCH_PHASE name=starting_committed '
+                        f'job_id={self._job_id} task_id={task_id} '
+                        f'epoch={time.time():.6f} '
+                        f'monotonic={time.monotonic():.6f}')
             logger.info(f'Submitted managed job {self._job_id} '
                         f'(task: {task_id}, name: {task.name!r}); '
                         f'{constants.TASK_ID_ENV_VAR}: {task_id_env_var}')
@@ -2076,6 +2080,7 @@ class ControllerManager:
         # do not signal enough there may be some jobs forever waiting to
         # launch).
         self._starting_signal = asyncio.Condition(lock=self._job_tasks_lock)
+        self._scheduler_wakeup = asyncio.Event()
 
         # Store graceful cancel info per job, keyed by job_id.
         # Populated by cancel_job() and consumed by run_job().
@@ -2084,6 +2089,10 @@ class ControllerManager:
 
         self._pid = os.getpid()
         self._pid_started_at = psutil.Process(self._pid).create_time()
+
+    def wake_scheduler(self) -> None:
+        """Interrupt the idle scheduler wait after a new submission."""
+        self._scheduler_wakeup.set()
 
     async def _cleanup(self,
                        job_id: int,
@@ -2600,6 +2609,10 @@ class ControllerManager:
         pid_str = str(self._pid)
 
         while True:
+            # Clear before querying the DB. If a submission races with the
+            # query, its signal sets the event and the wait below returns
+            # immediately; if the row is already visible, the query finds it.
+            self._scheduler_wakeup.clear()
             async with self._job_tasks_lock:
                 running_tasks = [
                     task for task in self.job_tasks.values() if not task.done()
@@ -2651,11 +2664,18 @@ class ControllerManager:
 
             if waiting_job is None:
                 logger.info('No waiting job, waiting for 10 seconds')
-                await asyncio.sleep(10)
+                try:
+                    await asyncio.wait_for(self._scheduler_wakeup.wait(),
+                                           timeout=10)
+                except asyncio.TimeoutError:
+                    pass
                 continue
 
             logger.info(f'Claiming job {waiting_job["job_id"]}')
             job_id = waiting_job['job_id']
+            logger.info('SKYPILOT_LAUNCH_PHASE name=controller_claimed '
+                        f'job_id={job_id} epoch={time.time():.6f} '
+                        f'monotonic={time.monotonic():.6f}')
             pool = waiting_job.get('pool', None)
 
             cancels = os.listdir(jobs_constants.CONSOLIDATED_SIGNAL_PATH)
@@ -2687,6 +2707,34 @@ async def main(controller_uuid: str):
         plugins.ExtensionContext(context=plugins.PluginContext.CONTROLLER))
 
     controller = ControllerManager(controller_uuid)
+    loop = asyncio.get_running_loop()
+    wake_socket = None
+    wake_socket_path = None
+    try:
+        new_wake_socket, wake_socket_path = (
+            scheduler.create_controller_wakeup_socket(controller_uuid))
+        wake_socket = new_wake_socket
+
+        def _handle_scheduler_wakeup() -> None:
+            try:
+                new_wake_socket.recv(16)
+            except BlockingIOError:
+                return
+            controller.wake_scheduler()
+
+        loop.add_reader(new_wake_socket.fileno(), _handle_scheduler_wakeup)
+    except (NotImplementedError, OSError) as e:
+        # The monitor loop retains the 10-second polling fallback.
+        logger.warning(f'Controller wake socket unavailable: {e}')
+        if wake_socket is not None:
+            wake_socket.close()
+            wake_socket = None
+        if wake_socket_path is not None:
+            try:
+                os.unlink(wake_socket_path)
+            except FileNotFoundError:
+                pass
+            wake_socket_path = None
 
     # Will happen multiple times, who cares though
     os.makedirs(jobs_constants.CONSOLIDATED_SIGNAL_PATH, exist_ok=True)
@@ -2714,6 +2762,15 @@ async def main(controller_uuid: str):
     except Exception as e:  # pylint: disable=broad-except
         logger.error(f'Controller server crashed: {e}')
         sys.exit(1)
+    finally:
+        if wake_socket is not None:
+            loop.remove_reader(wake_socket.fileno())
+            wake_socket.close()
+        if wake_socket_path is not None:
+            try:
+                os.unlink(wake_socket_path)
+            except FileNotFoundError:
+                pass
 
 
 if __name__ == '__main__':

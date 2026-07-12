@@ -48,9 +48,12 @@ import os
 import pathlib
 import shutil
 import signal
+import socket
 import sys
+import tempfile
+import time
 import typing
-from typing import List, Optional, Set
+from typing import List, Optional, Set, Tuple
 import uuid
 
 import filelock
@@ -84,8 +87,28 @@ JOB_CONTROLLER_PID_LOCK = os.path.expanduser(
 
 JOB_CONTROLLER_PID_PATH = os.path.expanduser('~/.sky/job_controller_pid')
 JOB_CONTROLLER_ENV_PATH = os.path.expanduser('~/.sky/job_controller_env')
+_SHORT_TMP_DIR = '/tmp' if os.path.isdir('/tmp') else tempfile.gettempdir()
+JOB_CONTROLLER_WAKEUP_DIR = os.path.join(_SHORT_TMP_DIR,
+                                         f'skypilot-jobs-wakeup-{os.getuid()}')
 
 CURRENT_HASH = os.path.expanduser('~/.sky/wheels/current_sky_wheel_hash')
+
+
+def create_controller_wakeup_socket(
+        controller_uuid: str) -> Tuple[socket.socket, str]:
+    """Create a datagram socket used to wake an idle controller."""
+    os.makedirs(JOB_CONTROLLER_WAKEUP_DIR, mode=0o700, exist_ok=True)
+    path = os.path.join(JOB_CONTROLLER_WAKEUP_DIR,
+                        f'{controller_uuid[:12]}.sock')
+    # A stale path can remain after an ungraceful controller exit.
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    wake_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    wake_socket.setblocking(False)
+    wake_socket.bind(path)
+    return wake_socket, path
 
 
 def _parse_controller_pid_entry(
@@ -199,6 +222,24 @@ def get_alive_controllers() -> Optional[int]:
         if managed_job_utils.controller_process_alive(record, quiet=False):
             alive += 1
     return alive
+
+
+def _wake_controllers() -> None:
+    """Wake controllers that advertise event-driven scheduling support."""
+    wake_dir = pathlib.Path(JOB_CONTROLLER_WAKEUP_DIR)
+    if not wake_dir.exists():
+        return
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as wake_socket:
+        # Notifications are only a latency optimization; never block job
+        # submission if a controller's receive queue is full.
+        wake_socket.setblocking(False)
+        for path in wake_dir.glob('*.sock'):
+            try:
+                wake_socket.sendto(b'wake', str(path))
+            except OSError as e:
+                # Stale sockets are harmless. Controllers always retain the
+                # periodic DB poll as a correctness fallback.
+                logger.debug(f'Failed to wake controller at {path}: {e}')
 
 
 def kill_local_job_controllers(sig: int = signal.SIGTERM) -> int:
@@ -379,11 +420,15 @@ def submit_jobs(job_ids: List[int],
                  f'env bytes={len(env_file_content)}, '
                  f'config bytes={config_bytes}).')
 
-    # Submit all jobs
+    # Submit all jobs.
     state.scheduler_set_waiting(job_ids, dag_yaml_content,
                                 original_user_yaml_content, env_file_content,
                                 config_file_content, priority, priority_class)
+    logger.info('SKYPILOT_LAUNCH_PHASE name=queue_committed '
+                f'job_ids={job_ids} epoch={time.time():.6f} '
+                f'monotonic={time.monotonic():.6f}')
     maybe_start_controllers(from_scheduler=True)
+    _wake_controllers()
 
 
 @contextlib.asynccontextmanager

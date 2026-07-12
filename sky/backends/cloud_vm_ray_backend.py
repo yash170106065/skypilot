@@ -130,6 +130,31 @@ SKY_REMOTE_WORKDIR = constants.SKY_REMOTE_WORKDIR
 
 logger = sky_logging.init_logger(__name__)
 
+_LAUNCH_PHASE_PREFIX = 'SKYPILOT_LAUNCH_PHASE'
+
+
+def _log_launch_phase(name: str) -> None:
+    """Emit a parseable timestamp for launch critical-path analysis."""
+    logger.info(f'{_LAUNCH_PHASE_PREFIX} name={name} '
+                f'epoch={time.time():.6f} '
+                f'monotonic={time.monotonic():.6f}')
+
+
+def _should_refresh_job_queue(
+        prev_cluster_status: Optional[status_lib.ClusterStatus],
+        runtime_metadata: provision_common.ProvisionRuntimeMetadata) -> bool:
+    """Whether an uncertain pre-existing queue needs reconciliation.
+
+    ``prev_cluster_status is None`` means a genuinely new cluster record with
+    no prior INIT state, so there cannot be stale remote jobs to reconcile.
+    STOPPED clusters use the stronger reset path below instead.
+    """
+    if prev_cluster_status is None:
+        return False
+    return (prev_cluster_status == status_lib.ClusterStatus.INIT and
+            runtime_metadata.has_job_queue)
+
+
 _PATH_SIZE_MEGABYTES_WARN_THRESHOLD = 256
 
 # Timeout (seconds) for provision progress: if in this duration no new nodes
@@ -3557,6 +3582,7 @@ class CloudVmRayBackend(backends.Backend['CloudVmRayResourceHandle']):
                         provision_record=provision_record,
                         custom_resource=resources_vars.get('custom_resources'),
                         log_dir=self.log_dir)
+                _log_launch_phase('provision_return')
                 # We use the IPs from the cluster_info to update_cluster_ips,
                 # when the provisioning is done, to make sure the cluster IPs
                 # are up-to-date.
@@ -3574,9 +3600,15 @@ class CloudVmRayBackend(backends.Backend['CloudVmRayResourceHandle']):
                 handle.launched_resources = handle.launched_resources.copy(
                     region=provision_record.region, zone=provision_record.zone)
 
+                _log_launch_phase('post_provision_update_start')
                 self._update_after_cluster_provisioned(
                     handle, to_provision_config.prev_handle, task,
                     prev_cluster_status, config_hash)
+                _log_launch_phase('post_provision_update_end')
+                # post_provision_runtime_setup() has already started and
+                # verified Skylet when runtime_metadata.has_skylet is true.
+                # Return here so the legacy path below does not issue a
+                # redundant remote Skylet restart check on fresh clusters.
                 return handle, False
 
             cluster_config_file = config_dict['ray']
@@ -3674,12 +3706,12 @@ class CloudVmRayBackend(backends.Backend['CloudVmRayResourceHandle']):
 
         # Update job queue to avoid stale jobs (when restarted), before
         # setting the cluster to be ready.
-        if (prev_cluster_status == status_lib.ClusterStatus.INIT and
-                runtime_metadata.has_job_queue):
+        if _should_refresh_job_queue(prev_cluster_status, runtime_metadata):
             # update_status will query the ray job status for all INIT /
             # PENDING / RUNNING jobs for the real status, since we do not
             # know the actual previous status of the cluster.
             logger.debug('Update job queue on remote cluster.')
+            _log_launch_phase('queue_refresh_start')
             with rich_utils.safe_status(
                     ux_utils.spinner_message('Preparing SkyPilot runtime')):
                 use_legacy = not handle.is_grpc_enabled_with_flag
@@ -3700,6 +3732,7 @@ class CloudVmRayBackend(backends.Backend['CloudVmRayResourceHandle']):
                         handle, cmd, require_outputs=True)
                     subprocess_utils.handle_returncode(
                         returncode, cmd, 'Failed to update job status.', stderr)
+            _log_launch_phase('queue_refresh_end')
         if (prev_cluster_status == status_lib.ClusterStatus.STOPPED and
                 runtime_metadata.has_job_queue):
             # Safely set all the previous jobs to FAILED since the cluster
@@ -4102,6 +4135,24 @@ class CloudVmRayBackend(backends.Backend['CloudVmRayResourceHandle']):
             stream_logs=False,
         )
 
+    def _use_grpc_for_managed_job_launch(
+            self, handle: CloudVmRayResourceHandle) -> bool:
+        """Whether launch-control RPCs should use the Skylet gRPC service.
+
+        Managed jobs on Kubernetes issue several back-to-back control
+        operations before the user command can start. Prefer the existing
+        authenticated gRPC-over-SSH path when the remote Skylet advertises
+        support. Other launch modes retain the opt-in feature flag.
+        """
+        # An explicit setting remains an operational override and makes
+        # rollback/A-B testing possible. When unset, auto-enable only for the
+        # measured managed-Kubernetes path.
+        if env_options.Options.ENABLE_GRPC.env_key in os.environ:
+            return handle.is_grpc_enabled_with_flag
+        return (self._is_launched_by_jobs_controller and isinstance(
+            handle.launched_resources.cloud, clouds.Kubernetes) and
+                handle.is_grpc_enabled)
+
     def _exec_code_on_head(
         self,
         handle: CloudVmRayResourceHandle,
@@ -4112,7 +4163,8 @@ class CloudVmRayBackend(backends.Backend['CloudVmRayResourceHandle']):
         remote_log_dir: Optional[str] = None,
     ) -> None:
         """Executes generated code on the head node."""
-        use_legacy = not handle.is_grpc_enabled_with_flag
+        _log_launch_phase('queue_job_start')
+        use_legacy = not self._use_grpc_for_managed_job_launch(handle)
         file_name = f'sky_job_{job_id}'
         script_path = os.path.join(SKY_REMOTE_APP_DIR, file_name)
         if remote_log_dir is None:
@@ -4278,6 +4330,7 @@ class CloudVmRayBackend(backends.Backend['CloudVmRayResourceHandle']):
                 f'Failed to submit job {job_id}.',
                 stderr=stdout + stderr)
 
+        _log_launch_phase('queue_job_end')
         controller = controller_utils.Controllers.from_name(handle.cluster_name)
         if controller == controller_utils.Controllers.SKY_SERVE_CONTROLLER:
             logger.info(ux_utils.starting_message('Service registered.'))
@@ -4289,7 +4342,8 @@ class CloudVmRayBackend(backends.Backend['CloudVmRayResourceHandle']):
     def _add_job(self, handle: CloudVmRayResourceHandle,
                  job_name: Optional[str], resources_str: str,
                  metadata: str) -> Tuple[int, str]:
-        use_legacy = not handle.is_grpc_enabled_with_flag
+        _log_launch_phase('add_job_start')
+        use_legacy = not self._use_grpc_for_managed_job_launch(handle)
 
         if not use_legacy:
             try:
@@ -4304,6 +4358,7 @@ class CloudVmRayBackend(backends.Backend['CloudVmRayResourceHandle']):
                         request))
                 job_id = response.job_id
                 log_dir = response.log_dir
+                _log_launch_phase('add_job_end')
                 return job_id, log_dir
             except exceptions.SKYLET_GRPC_FALLBACK_ERRORS as e:
                 logger.debug(f'gRPC failed, falling back to SSH: {e}')
@@ -4348,6 +4403,7 @@ class CloudVmRayBackend(backends.Backend['CloudVmRayResourceHandle']):
                 logger.error(stderr)
                 raise ValueError(f'Failed to parse job id: {result_str}; '
                                  f'Returncode: {returncode}') from e
+        _log_launch_phase('add_job_end')
         return job_id, log_dir
 
     def set_job_info_without_job_id(
@@ -5837,32 +5893,39 @@ class CloudVmRayBackend(backends.Backend['CloudVmRayResourceHandle']):
             # store misleading timeouts).
             if isinstance(handle.launched_resources.cloud, clouds.Kubernetes):
                 hooks = k8s_cloud.cap_preemption_hook_timeouts(hooks)
-            if handle.is_grpc_enabled_with_flag:
-                request = autostopv1_pb2.SetAutostopRequest(
-                    idle_minutes=idle_minutes_to_autostop,
-                    backend=self.NAME,
-                    wait_for=wait_for.to_protobuf() if wait_for is not None else
-                    autostopv1_pb2.AUTOSTOP_WAIT_FOR_UNSPECIFIED,
-                    down=down,
-                )
-                if hook:
-                    request.hook = hook
-                if hook_timeout is not None:
-                    request.hook_timeout = hook_timeout
-                # v7+: send the full hooks list inline on the same RPC.
-                # Three states for the `hooks` arg:
-                #   None  → legacy/no-hook-aware caller; don't touch stored
-                #   []    → caller explicitly clears stored hooks
-                #   [...] → replace stored hooks with this list
-                if hooks is None:
-                    pass  # leave stored hooks alone
-                elif not hooks:
-                    request.clear_hooks = True
-                else:
-                    request.hooks.extend(autostop_lib.hooks_to_protobuf(hooks))
-                backend_utils.invoke_skylet_with_retries(lambda: SkyletClient(
-                    handle.get_grpc_channel()).set_autostop(request))
-            else:
+            use_legacy = not self._use_grpc_for_managed_job_launch(handle)
+            if not use_legacy:
+                try:
+                    request = autostopv1_pb2.SetAutostopRequest(
+                        idle_minutes=idle_minutes_to_autostop,
+                        backend=self.NAME,
+                        wait_for=wait_for.to_protobuf() if wait_for is not None
+                        else autostopv1_pb2.AUTOSTOP_WAIT_FOR_UNSPECIFIED,
+                        down=down,
+                    )
+                    if hook:
+                        request.hook = hook
+                    if hook_timeout is not None:
+                        request.hook_timeout = hook_timeout
+                    # v7+: send the full hooks list inline on the same RPC.
+                    # Three states for the `hooks` arg:
+                    #   None  → legacy/no-hook-aware caller; preserve hooks
+                    #   []    → caller explicitly clears stored hooks
+                    #   [...] → replace stored hooks with this list
+                    if hooks is None:
+                        pass
+                    elif not hooks:
+                        request.clear_hooks = True
+                    else:
+                        request.hooks.extend(
+                            autostop_lib.hooks_to_protobuf(hooks))
+                    backend_utils.invoke_skylet_with_retries(
+                        lambda: SkyletClient(handle.get_grpc_channel()
+                                            ).set_autostop(request))
+                except exceptions.SKYLET_GRPC_FALLBACK_ERRORS as e:
+                    logger.debug(f'gRPC failed, falling back to SSH: {e}')
+                    use_legacy = True
+            if use_legacy:
                 code = autostop_lib.AutostopCodeGen.set_autostop(
                     idle_minutes_to_autostop, self.NAME, wait_for, down, hook,
                     hook_timeout, hooks)
