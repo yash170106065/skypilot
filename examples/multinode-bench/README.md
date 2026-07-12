@@ -79,14 +79,35 @@ NUM_NODES=4 BENCHMARK_VARIANT=control \
   ./examples/multinode-bench/benchmark.sh 3
 ```
 
-## 5. Recovery bonus (optional)
+## 5. Recovery bonus (delete one worker mid-run)
+
+Same A/B shape as launch: long-running 4-node job, `kubectl delete` one worker, measure until RUNNING again.
+
+Primary metric in `summary.csv`: **`t_delete_to_running_again_sec`**.
+
+Optimized / prototype branch:
 
 ```bash
+git checkout f/launch-speedup-all
+sky api stop && sky api start --deploy
 NUM_NODES=4 VARIANT=optimized \
   ./examples/multinode-bench/run_recovery_bonus.sh
 ```
 
-Deletes one worker pod mid-run and records delete → RUNNING-again.
+Stock baseline (same machine):
+
+```bash
+git checkout master   # or upstream/master
+sky api stop && sky api start --deploy
+NUM_NODES=4 VARIANT=baseline \
+  ./examples/multinode-bench/run_recovery_bonus.sh
+```
+
+Checked-in runs:
+
+- `results/recovery_optimized_20260712_212630/` (job 73 → **93.5s**)
+- `results/recovery_baseline_20260712_214203/` (job 74 → **400.0s**)
+- Side-by-side: `results/recovery_baseline_vs_optimized.csv`
 
 ## 6. Compare to checked-in numbers
 
