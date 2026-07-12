@@ -1,0 +1,6 @@
+NAME                                           READY   STATUS    RESTARTS   AGE   IP            NODE                     NOMINATED NODE   READINESS GATES
+fun-62e89673-head                              1/1     Running   0          26d   10.244.0.8    skypilot-control-plane   <none>           <none>
+recovery-baseline-214203-74-62e89673-head      1/1     Running   0          4m    10.244.0.78   skypilot-control-plane   <none>           <none>
+recovery-baseline-214203-74-62e89673-worker1   1/1     Running   0          4m    10.244.0.80   skypilot-control-plane   <none>           <none>
+recovery-baseline-214203-74-62e89673-worker2   1/1     Running   0          4m    10.244.0.77   skypilot-control-plane   <none>           <none>
+recovery-baseline-214203-74-62e89673-worker3   1/1     Running   0          4m    10.244.0.79   skypilot-control-plane   <none>           <none>

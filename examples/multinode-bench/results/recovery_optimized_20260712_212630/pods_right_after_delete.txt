@@ -1,0 +1,4 @@
+recovery-bench-212630-73-62e89673-head      1/1     Running       0          9m39s
+recovery-bench-212630-73-62e89673-worker1   1/1     Terminating   0          9m39s
+recovery-bench-212630-73-62e89673-worker2   1/1     Running       0          9m39s
+recovery-bench-212630-73-62e89673-worker3   1/1     Running       0          9m39s

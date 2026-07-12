@@ -1,0 +1,4 @@
+[36m(head, rank=0, pid=1179)[0m [rank 0] started at 1783871842.020414462 on recovery-bench-212630-73-62e89673-head
+[36m(worker1, rank=1, pid=757, ip=10.244.0.69)[0m [rank 1] started at 1783871842.500215670 on recovery-bench-212630-73-62e89673-worker1
+[36m(worker2, rank=2, pid=750, ip=10.244.0.70)[0m [rank 2] started at 1783871842.563636962 on recovery-bench-212630-73-62e89673-worker2
+[36m(worker3, rank=3, pid=749, ip=10.244.0.71)[0m [rank 3] started at 1783871842.692619504 on recovery-bench-212630-73-62e89673-worker3

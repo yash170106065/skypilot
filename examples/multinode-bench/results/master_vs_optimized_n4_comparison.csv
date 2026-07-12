@@ -1,0 +1,7 @@
+side,trial,t_all_ranks_sec,t_cli_return_sec,t_cluster_launch_sec,t_runtime_bootstrap_sec,miniconda_downloaded,git_sha,status
+master,1,109.3,134.1,103.78,64,yes,c803f77d19899b6924e0acc3c092735b94c949b7,SUCCEEDED
+master,2,137.7,161.2,131.14,48,yes,c803f77d19899b6924e0acc3c092735b94c949b7,SUCCEEDED
+master,3,165.2,188.5,161.28,60,yes,c803f77d19899b6924e0acc3c092735b94c949b7,SUCCEEDED
+optimized,1,46.5,70.2,46.53,10,no,1594439d6f5f290b773a71e8856234a39e503e97,SUCCEEDED
+optimized,2,43.8,69.6,41.60,5,no,1594439d6f5f290b773a71e8856234a39e503e97,SUCCEEDED
+optimized,3,46.8,71.3,44.72,10,no,1594439d6f5f290b773a71e8856234a39e503e97,SUCCEEDED

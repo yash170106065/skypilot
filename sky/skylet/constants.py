@@ -250,7 +250,16 @@ SETUP_SKY_DIRS_COMMANDS = (f'mkdir -p ~/sky_workdir && '
 # We use python 3.10 to be consistent with the python version of the
 # AWS's Deep Learning AMI's default conda environment.
 CONDA_INSTALLATION_COMMANDS = (
-    'which conda > /dev/null 2>&1 || '
+    # Prefer the baked-in conda path over `which conda`. Pre-baked K8s images
+    # install miniconda at SKY_CONDA_ROOT but it is not on PATH during pod
+    # bootstrap, which caused a redundant ~100MB download every launch.
+    f'if [ -x "{SKY_CONDA_ROOT}/bin/conda" ]; then '
+    f'eval "$({SKY_CONDA_ROOT}/bin/conda shell.bash hook)" && '
+    # Caller should replace {conda_auto_activate} with either true or false.
+    'conda config --set auto_activate_base {conda_auto_activate}; '
+    'elif which conda > /dev/null 2>&1; then '
+    'true; '
+    'else '
     '{ '
     # Use uname -m to get the architecture of the machine and download the
     # corresponding Miniconda3-Linux.sh script.
@@ -263,7 +272,6 @@ CONDA_INSTALLATION_COMMANDS = (
     '{ '
     f'bash /tmp/Miniconda3-Linux.sh -b -p "{SKY_CONDA_ROOT}" || true; '
     f'eval "$({SKY_CONDA_ROOT}/bin/conda shell.bash hook)" && conda init && '
-    # Caller should replace {conda_auto_activate} with either true or false.
     'conda config --set auto_activate_base {conda_auto_activate} && '
     'conda activate base; }; '
     # If conda was not installed and the image is a docker image,
@@ -273,6 +281,7 @@ CONDA_INSTALLATION_COMMANDS = (
     'conda deactivate;'
     'fi;'
     '}; '
+    'fi; '
     # run this command only if the image is not a docker image assuming
     # that if a user is using a docker image, they know what they are doing
     # in terms of conda setup/activation.

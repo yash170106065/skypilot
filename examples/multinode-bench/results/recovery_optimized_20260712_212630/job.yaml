@@ -1,0 +1,14 @@
+name: multinode-recovery-bench
+num_nodes: 4
+
+resources:
+  infra: k8s
+  cpus: 1+
+  memory: 1+
+
+# Stay RUNNING long enough to delete a worker mid-run.
+run: |
+  echo "[rank ${SKYPILOT_NODE_RANK}] started at $(date +%s.%N) on $(hostname)"
+  # Keep the Ray task alive so managed-job recovery can be exercised.
+  sleep 600
+  echo "[rank ${SKYPILOT_NODE_RANK}] finished at $(date +%s.%N) on $(hostname)"

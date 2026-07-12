@@ -1,0 +1,8 @@
+# Keep summary tables; ignore bulky per-trial log dumps if re-run locally
+results/**/trial_*/api_server.log
+results/**/trial_*/controller.log
+results/**/trial_*/controller_manager.log
+results/**/trial_*/job.log
+results/**/trial_*/launch.log
+results/**/trial_*/provision.log
+results/**/pod_snapshots.jsonl

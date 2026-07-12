@@ -1,0 +1,12 @@
+name: multinode-bench-fast
+num_nodes: 2
+
+resources:
+  infra: kubernetes
+  cpus: 1+
+  memory: 1+
+  # Pre-baked image: conda + ray + apt deps (see Dockerfile_k8s)
+  image_id: docker:skypilot-k8s:local
+
+run: |
+  echo "[rank ${SKYPILOT_NODE_RANK}] started at $(date +%s.%N) on $(hostname)"

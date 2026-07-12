@@ -1,0 +1,9 @@
+metric,value
+t_delete_to_recovering_sec,37.8
+t_delete_to_running_again_sec,93.5
+t_recovering_to_running_again_sec,55.7
+t_delete_to_terminal_sec,119.6
+saw_recovering,1
+final_status,CANCELLED
+deleted_pod,recovery-bench-212630-73-62e89673-worker1
+job_id,73

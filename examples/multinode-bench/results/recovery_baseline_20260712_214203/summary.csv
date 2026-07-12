@@ -1,0 +1,11 @@
+metric,value
+variant,baseline
+job_id,74
+t_launch_to_running_sec,247.1
+t_delete_to_recovering_sec,54.2
+t_recovering_to_running_again_sec,345.8
+t_delete_to_running_again_sec,400.0
+t_delete_to_terminal_sec,418.3
+saw_recovering,1
+final_status,CANCELLED
+deleted_pod,recovery-baseline-214203-74-62e89673-worker1

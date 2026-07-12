@@ -1,0 +1,10 @@
+name: multinode-bench
+num_nodes: 2  # use 4 on larger clusters; kind single-node: start with 2
+
+resources:
+  infra: kubernetes
+  cpus: 1+
+  memory: 1+
+
+run: |
+  echo "[rank ${SKYPILOT_NODE_RANK}] started at $(date +%s.%N) on $(hostname)"
